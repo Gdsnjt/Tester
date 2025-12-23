@@ -473,23 +473,26 @@ class CameraGUI:
             return
         
         try:
-            if self.provider.start_acquisition():
-                self.display_running = True
-                self.fps_frame_count = 0
-                self.fps_start_time = 0
-                
-                # 取得スレッド開始
-                self.acquisition_thread = threading.Thread(
-                    target=self._acquisition_loop, daemon=True)
-                self.acquisition_thread.start()
-                
-                # 表示更新開始
-                self._update_live_display()
-                
-                self._update_status("ライブビュー中...")
-                self._update_button_states()
-            else:
-                messagebox.showerror("エラー", "ライブビュー開始に失敗しました")
+            # すでに取得中でない場合のみ開始
+            if not self.provider.is_acquiring:
+                if not self.provider.start_acquisition():
+                    messagebox.showerror("エラー", "ライブビュー開始に失敗しました")
+                    return
+            
+            self.display_running = True
+            self.fps_frame_count = 0
+            self.fps_start_time = 0
+            
+            # 取得スレッド開始
+            self.acquisition_thread = threading.Thread(
+                target=self._acquisition_loop, daemon=True)
+            self.acquisition_thread.start()
+            
+            # 表示更新開始
+            self._update_live_display()
+            
+            self._update_status("ライブビュー中...")
+            self._update_button_states()
                 
         except Exception as e:
             messagebox.showerror("エラー", f"ライブビュー開始エラー:\n{str(e)}")
@@ -599,6 +602,8 @@ class CameraGUI:
             if not self.provider.is_acquiring:
                 if not self.provider.start_acquisition():
                     messagebox.showerror("エラー", "撮影準備に失敗しました")
+                    self.is_capturing = False
+                    self.capture_btn['state'] = tk.NORMAL
                     return
             
             # 画像を取得
@@ -629,6 +634,7 @@ class CameraGUI:
         finally:
             self.is_capturing = False
             self.capture_btn['state'] = tk.NORMAL
+            # 注: 単発撮影後も取得状態を維持（ライブビューへのスムーズな遷移のため）
     
     def _display_image(self, image_data: ImageData):
         """画像をCanvasに表示"""
