@@ -641,7 +641,7 @@ class PLCServerGUI:
             try:
                 # ビットデバイス取得
                 bit_data = {}
-                for device in ['X', 'Y', 'M']:
+                for device in ['X', 'Y', 'M', 'B']:
                     device_type = DeviceType.from_code(device)
                     if device_type:
                         for addr in range(8):
