@@ -297,6 +297,38 @@ class PLCServerGUI:
         monitor_frame = ttk.LabelFrame(parent, text="デバイスモニタ", padding="10")
         monitor_frame.pack(fill=tk.BOTH, expand=True)
         
+        # モニタ範囲設定
+        range_frame = ttk.Frame(monitor_frame)
+        range_frame.pack(fill=tk.X, pady=5)
+        
+        # ビットデバイス範囲
+        ttk.Label(range_frame, text="ビット:").pack(side=tk.LEFT, padx=5)
+        self.bit_device_var = tk.StringVar(value="X")
+        bit_combo = ttk.Combobox(range_frame, textvariable=self.bit_device_var,
+                                  values=["X", "Y", "M", "B"], state="readonly", width=4)
+        bit_combo.pack(side=tk.LEFT, padx=2)
+        
+        self.bit_start_var = tk.StringVar(value="0")
+        ttk.Entry(range_frame, textvariable=self.bit_start_var, width=6).pack(side=tk.LEFT, padx=2)
+        ttk.Label(range_frame, text="〜").pack(side=tk.LEFT)
+        self.bit_count_var = tk.StringVar(value="16")
+        ttk.Entry(range_frame, textvariable=self.bit_count_var, width=4).pack(side=tk.LEFT, padx=2)
+        ttk.Label(range_frame, text="点").pack(side=tk.LEFT, padx=(0, 15))
+        
+        # ワードデバイス範囲
+        ttk.Label(range_frame, text="ワード:").pack(side=tk.LEFT, padx=5)
+        self.word_device_var = tk.StringVar(value="D")
+        word_combo = ttk.Combobox(range_frame, textvariable=self.word_device_var,
+                                   values=["D", "W", "R", "TN", "CN"], state="readonly", width=4)
+        word_combo.pack(side=tk.LEFT, padx=2)
+        
+        self.word_start_var = tk.StringVar(value="0")
+        ttk.Entry(range_frame, textvariable=self.word_start_var, width=6).pack(side=tk.LEFT, padx=2)
+        ttk.Label(range_frame, text="〜").pack(side=tk.LEFT)
+        self.word_count_var = tk.StringVar(value="16")
+        ttk.Entry(range_frame, textvariable=self.word_count_var, width=4).pack(side=tk.LEFT, padx=2)
+        ttk.Label(range_frame, text="点").pack(side=tk.LEFT, padx=(0, 15))
+        
         # モニタ制御
         monitor_ctrl = ttk.Frame(monitor_frame)
         monitor_ctrl.pack(fill=tk.X, pady=5)
@@ -312,6 +344,21 @@ class PLCServerGUI:
         ttk.Label(monitor_ctrl, text="更新間隔(ms):").pack(side=tk.LEFT, padx=(20, 5))
         self.monitor_interval_var = tk.StringVar(value="200")
         ttk.Entry(monitor_ctrl, textvariable=self.monitor_interval_var, width=6).pack(side=tk.LEFT)
+        
+        # プリセットボタン
+        preset_frame = ttk.Frame(monitor_frame)
+        preset_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(preset_frame, text="プリセット:").pack(side=tk.LEFT, padx=5)
+        ttk.Button(preset_frame, text="D0-15", width=8,
+                   command=lambda: self._set_word_range("D", 0, 16)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(preset_frame, text="D100-115", width=10,
+                   command=lambda: self._set_word_range("D", 100, 16)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(preset_frame, text="D1000-1015", width=12,
+                   command=lambda: self._set_word_range("D", 1000, 16)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(preset_frame, text="D5000-5015", width=12,
+                   command=lambda: self._set_word_range("D", 5000, 16)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(preset_frame, text="D6000-6015", width=12,
+                   command=lambda: self._set_word_range("D", 6000, 16)).pack(side=tk.LEFT, padx=2)
         
         # デバイスツリービュー
         tree_frame = ttk.Frame(monitor_frame)
@@ -604,6 +651,12 @@ class PLCServerGUI:
         self.server.set_device_value(device_type, address, value)
         self._log(f"クイック設定: {device} = {value}")
     
+    def _set_word_range(self, device: str, start: int, count: int):
+        """ワードデバイスの表示範囲を設定"""
+        self.word_device_var.set(device)
+        self.word_start_var.set(str(start))
+        self.word_count_var.set(str(count))
+    
     # === デバイスモニタ ===
     
     def _start_device_monitor(self):
@@ -639,35 +692,55 @@ class PLCServerGUI:
                 interval = 200
             
             try:
+                # ビットデバイス範囲を取得
+                bit_device = self.bit_device_var.get()
+                bit_device_type = DeviceType.from_code(bit_device)
+                is_hex_bit = bit_device in ['X', 'Y', 'B']
+                try:
+                    bit_start = int(self.bit_start_var.get(), 16 if is_hex_bit else 10)
+                except:
+                    bit_start = 0
+                try:
+                    bit_count = int(self.bit_count_var.get())
+                except:
+                    bit_count = 16
+                bit_count = min(bit_count, 64)  # 最大64点
+                
                 # ビットデバイス取得
                 bit_data = {}
-                for device in ['X', 'Y', 'M', 'B']:
-                    device_type = DeviceType.from_code(device)
-                    if device_type:
-                        for addr in range(8):
-                            val = self.server.devices.get_bit(device_type, addr)
-                            bit_data[f"{device}{addr}"] = 1 if val else 0
+                if bit_device_type:
+                    for i in range(bit_count):
+                        addr = bit_start + i
+                        val = self.server.devices.get_bit(bit_device_type, addr)
+                        if is_hex_bit:
+                            bit_data[f"{bit_device}{addr:X}"] = 1 if val else 0
+                        else:
+                            bit_data[f"{bit_device}{addr}"] = 1 if val else 0
                 
-                # タイマ・カウンタ接点
-                for prefix, dt in [('T', DeviceType.TC), ('C', DeviceType.CC)]:
-                    for addr in range(4):
-                        val = self.server.devices.get_bit(dt, addr)
-                        bit_data[f"{prefix}{addr}"] = 1 if val else 0
+                # ワードデバイス範囲を取得
+                word_device = self.word_device_var.get()
+                word_device_type = DeviceType.from_code(word_device)
+                is_hex_word = word_device in ['W']
+                try:
+                    word_start = int(self.word_start_var.get(), 16 if is_hex_word else 10)
+                except:
+                    word_start = 0
+                try:
+                    word_count = int(self.word_count_var.get())
+                except:
+                    word_count = 16
+                word_count = min(word_count, 64)  # 最大64点
                 
                 # ワードデバイス取得
                 word_data = {}
-                for device in ['D', 'W', 'R']:
-                    device_type = DeviceType.from_code(device)
-                    if device_type:
-                        for addr in range(8):
-                            val = self.server.devices.get_word(device_type, addr)
-                            word_data[f"{device}{addr}"] = val
-                
-                # タイマ・カウンタ現在値
-                for prefix, dt in [('TN', DeviceType.TN), ('CN', DeviceType.CN)]:
-                    for addr in range(4):
-                        val = self.server.devices.get_word(dt, addr)
-                        word_data[f"{prefix[0]}{addr}現在値"] = val
+                if word_device_type:
+                    for i in range(word_count):
+                        addr = word_start + i
+                        val = self.server.devices.get_word(word_device_type, addr)
+                        if is_hex_word:
+                            word_data[f"{word_device}{addr:X}"] = val
+                        else:
+                            word_data[f"{word_device}{addr}"] = val
                 
                 # UI更新
                 self.root.after(0, lambda b=bit_data, w=word_data: self._update_device_trees(b, w))

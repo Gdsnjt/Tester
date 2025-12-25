@@ -564,16 +564,14 @@ class PLCClientGUI:
             
             is_bit = self.write_type_var.get() == "bit"
             
+            # write_bit/write_wordは成功時にNoneを返し、失敗時に例外を投げる
             if is_bit:
-                success = self.client.write_bit(device, address, bool(value))
+                self.client.write_bit(device, address, bool(value))
             else:
-                success = self.client.write_word(device, address, value)
+                self.client.write_word(device, address, value)
             
-            if success:
-                self._log(f"書き込み: {device}{address} = {value}")
-            else:
-                messagebox.showerror("エラー", "書き込みに失敗しました")
-                self._log(f"書き込みエラー: {device}{address}")
+            # 例外がなければ成功
+            self._log(f"書き込み成功: {device}{address} = {value}")
                 
         except Exception as e:
             messagebox.showerror("エラー", f"書き込みエラー: {e}")
@@ -585,11 +583,13 @@ class PLCClientGUI:
             messagebox.showwarning("警告", "PLCに接続してください")
             return
         
-        device_type = DeviceType.from_code(device)
-        if device_type:
-            success = self.client.write_bit(device, address, bool(value))
-            if success:
+        try:
+            device_type = DeviceType.from_code(device)
+            if device_type:
+                self.client.write_bit(device, address, bool(value))
                 self._log(f"クイック書き込み: {device}{address} = {value}")
+        except Exception as e:
+            self._log(f"クイック書き込みエラー: {e}")
     
     # === デバイスモニタ ===
     
@@ -723,22 +723,24 @@ class PLCClientGUI:
         if not self.client:
             return
         
-        if self.client.remote_run():
+        try:
+            self.client.remote_run()
             self._log("リモートRUN成功")
-        else:
-            self._log("リモートRUN失敗")
-            messagebox.showerror("エラー", "リモートRUNに失敗しました")
+        except Exception as e:
+            self._log(f"リモートRUN失敗: {e}")
+            messagebox.showerror("エラー", f"リモートRUNに失敗しました: {e}")
     
     def _remote_stop(self):
         """リモートSTOP"""
         if not self.client:
             return
         
-        if self.client.remote_stop():
+        try:
+            self.client.remote_stop()
             self._log("リモートSTOP成功")
-        else:
-            self._log("リモートSTOP失敗")
-            messagebox.showerror("エラー", "リモートSTOPに失敗しました")
+        except Exception as e:
+            self._log(f"リモートSTOP失敗: {e}")
+            messagebox.showerror("エラー", f"リモートSTOPに失敗しました: {e}")
     
     def _remote_reset(self):
         """リモートRESET"""
@@ -746,11 +748,12 @@ class PLCClientGUI:
             return
         
         if messagebox.askyesno("確認", "PLCをリセットしますか？"):
-            # RESETは通常のMCプロトコルにはないので、STOPで代用
-            if self.client.remote_stop():
+            try:
+                # RESETは通常のMCプロトコルにはないので、STOPで代用
+                self.client.remote_stop()
                 self._log("リモートRESET成功")
-            else:
-                self._log("リモートRESET失敗")
+            except Exception as e:
+                self._log(f"リモートRESET失敗: {e}")
     
     def _read_cpu_model(self):
         """CPU型名読出し"""
