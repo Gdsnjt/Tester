@@ -15,7 +15,12 @@ HarvesterライブラリでGigEカメラ接続をテストするプロジェク�
 ├── client.py              # GUIアプリケーション（メインエントリーポイント）
 ├── camera_interface.py    # カメラプロバイダー抽象インターフェース
 ├── harvester_camera.py    # 実カメラ用Harvester実装
-├── mock_camera.py         # テスト用モックカメラ実装
+├── mock_camera.py         # テスト用モックカメラ実装（内部シミュレーション）
+├── gige_protocol.py       # GigE Vision プロトコル定義
+├── gige_mock_server.py    # GigE Vision モックカメラサーバー
+├── gige_client.py         # GigE Vision 直接クライアント
+├── mock_camera_gui.py     # モックカメラサーバー GUI
+├── test_gige_mock.py      # GigE モックサーバーテスト
 ├── ProducerGEV.cti        # GenTL Producer（実カメラ使用時に要配置）
 └── requirements.txt       # 必要なライブラリ
 ```
@@ -32,14 +37,21 @@ HarvesterライブラリでGigEカメラ接続をテストするプロジェク�
 │           camera_interface.py (抽象層)                  │
 │               ICameraProvider                           │
 └─────────────────────────────────────────────────────────┘
-                    │                │
-          ┌─────────┘                └─────────┐
-          ▼                                    ▼
-┌──────────────────────┐            ┌──────────────────────┐
-│ harvester_camera.py  │            │   mock_camera.py     │
-│   (実カメラ用)        │            │  画像ファイル/生成    │
-│   Harvester使用       │            │  画像ファイル/生成    │
-└──────────────────────┘            └──────────────────────┘
+           │                │                │
+    ┌──────┘                │                └──────┐
+    ▼                       ▼                       ▼
+┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
+│harvester_camera  │ │  mock_camera.py  │ │  gige_client.py  │
+│   (実カメラ用)   │ │ (内部シミュレーション)│ │ (GigE直接接続)   │
+│   Harvester使用  │ │  画像ファイル/生成 │ │  UDPプロトコル   │
+└──────────────────┘ └──────────────────┘ └──────────────────┘
+                                                   │
+                                                   ▼
+                                          ┌──────────────────┐
+                                          │gige_mock_server  │
+                                          │ (モックGigEカメラ)│
+                                          │ 実際のネットワーク │
+                                          └──────────────────┘
 ```
 
 ## セットアップ
@@ -93,6 +105,108 @@ python client.py
 6. 表示モードを選択:
    - **ライブビュー**: リアルタイム映像表示
    - **単発撮影**: 必要なタイミングで撮影
+
+## GigE Vision モックカメラサーバー
+
+実際のGigE Visionプロトコル（GVCP/GVSP）を実装したモックカメラサーバーです。
+Harvesterなど、任意のGigE Vision対応クライアントからアクセスできます。
+
+### 特徴
+
+- **完全なGVCPサポート**: DISCOVERY、READREG、WRITEREG、READMEM
+- **GVSPストリーミング**: 画像パケットの送信
+- **カスタム画像対応**: 任意の画像をカメラ出力として使用可能
+- **GUI制御**: GUIでサーバーを簡単に操作
+
+### モックサーバー GUI の起動
+
+```bash
+python mock_camera_gui.py
+```
+
+### コマンドラインでの起動
+
+```bash
+# サーバー起動
+python test_gige_mock.py --mode server
+
+# クライアントテスト
+python test_gige_mock.py --mode client
+
+# サーバー＋クライアント統合テスト
+python test_gige_mock.py --mode both
+```
+
+### プログラムからの使用（サーバー側）
+
+```python
+from gige_mock_server import GigEMockCameraServer, MockCameraConfig
+import numpy as np
+
+# 設定
+config = MockCameraConfig(
+    model_name="MyMockCamera",
+    vendor_name="TestVendor",
+    width=640,
+    height=480
+)
+
+# サーバー作成
+server = GigEMockCameraServer(config)
+
+# カスタム画像を設定（オプション）
+custom_image = np.zeros((480, 640, 3), dtype=np.uint8)
+custom_image[:, :, 1] = 255  # 緑色
+server.add_image(custom_image)
+
+# 起動
+if server.start():
+    print(f"サーバー起動: {server.local_ip}:3956")
+    # ... (サーバーを動作させる)
+    server.stop()
+```
+
+### プログラムからの使用（クライアント側）
+
+```python
+from gige_client import GigEDirectProvider
+
+# プロバイダー作成
+provider = GigEDirectProvider()
+provider.initialize()
+
+# デバイス検出（ブロードキャスト）
+devices = provider.discover_devices()
+
+# または直接IPで接続
+provider.connect("192.168.1.100", port=3956)
+
+# 画像取得
+provider.start_acquisition()
+image = provider.get_image(timeout=5.0)
+if image:
+    print(f"取得: {image.width}x{image.height}")
+
+# クリーンアップ
+provider.stop_acquisition()
+provider.disconnect()
+provider.cleanup()
+```
+
+### ネットワークポートについて
+
+- **GVCP**: UDP 3956（デフォルト）
+- **GVSP**: 動的割り当て
+
+他のGigEカメラと競合する場合は、カスタムポートを使用できます：
+
+```python
+# サーバー側
+config = MockCameraConfig(gvcp_port=13956)
+
+# クライアント側
+provider.connect("192.168.1.100", port=13956)
+```
 
 ## モックカメラの拡張
 
