@@ -88,7 +88,24 @@ class HarvesterCameraProvider(ICameraProvider):
             return []
         
         try:
+            print("[Harvester] デバイス検出を開始...")
             self._harvester.update()
+            print(f"[Harvester] update()完了")
+            print(f"[Harvester] device_info_list length: {len(self._harvester.device_info_list)}")
+            
+            # デバッグ: 全てのデバイス情報を詳細表示
+            for i, dev_info in enumerate(self._harvester.device_info_list):
+                print(f"[Harvester] Device {i}:")
+                for attr in dir(dev_info):
+                    if not attr.startswith('_'):
+                        try:
+                            value = getattr(dev_info, attr, None)
+                            if not callable(value):
+                                print(f"  {attr}: {value}")
+                        except:
+                            pass
+            
+            print(f"[Harvester] {len(self._harvester.device_info_list)}台のデバイスが見つかりました")
             
             self._devices = []
             for i, dev_info in enumerate(self._harvester.device_info_list):
