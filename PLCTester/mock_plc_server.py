@@ -217,13 +217,44 @@ class MockPLCServer:
     def _handle_request(self, data: bytes) -> bytes:
         """リクエストを処理"""
         try:
+            # デバッグログ - 受信データの詳細表示
+            hex_preview = data[:min(50, len(data))].hex()
+            self._log(f"Received {len(data)} bytes: {hex_preview}")
+            
+            # ASCII形式かどうかをログ
+            try:
+                if all(32 <= b < 127 for b in data[:min(20, len(data))]):
+                    ascii_preview = data[:min(50, len(data))].decode('ascii', errors='replace')
+                    self._log(f"ASCII preview: {ascii_preview}")
+            except:
+                pass
+            
             # リクエスト解析
             request = MCProtocol.parse_request(data)
+            
+            # フレームタイプを記録
+            frame_type = request.get('frame_type', None)
+            original_command = request.get('original_command', None)
+            
+            # フレームタイプに応じたログ
+            if frame_type:
+                self._log(f"Frame: {frame_type}, CMD: {request.get('command', 0):#06x}, SUB: {request.get('sub_command', 0):#06x}")
+            else:
+                self._log(f"Frame: 3E/4E Binary, CMD: {request.get('command', 0):#06x}, SUB: {request.get('sub_command', 0):#06x}")
+            
+            # 非対応フレームのチェック
+            if frame_type == 'FINS_UNSUPPORTED':
+                self._log("FINS protocol not supported")
+                return b'\x00\x00\x00\x00'  # 空のレスポンス
             
             # コマンド取得
             command = request.get('command', 0)
             sub_command = request.get('sub_command', 0)
             command_data = request.get('command_data', b'')
+            
+            # コマンドデータのログ
+            if command_data:
+                self._log(f"Command data ({len(command_data)} bytes): {command_data[:min(20, len(command_data))].hex()}")
             
             # コールバック
             if self.on_command_received:
@@ -237,18 +268,29 @@ class MockPLCServer:
                 command, sub_command, command_data
             )
             
-            # レスポンス構築
+            # 結果ログ
+            self._log(f"Response: end_code={end_code:#06x}, data_len={len(response_data)}")
+            
+            # レスポンス構築（フレームタイプに応じて）
             return MCProtocol.build_response(
                 series=self.series,
                 end_code=end_code,
                 data=response_data,
                 network_no=request.get('network_no', 0),
                 pc_no=request.get('pc_no', 0xFF),
-                serial_no=request.get('serial_no', 0)
+                serial_no=request.get('serial_no', 0),
+                frame_type=frame_type,
+                original_command=original_command
             )
             
         except Exception as e:
             self._log(f"Request handling error: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # デバッグ用：生データダンプ
+            self._log(f"Raw data dump: {data.hex()}")
+            
             return MCProtocol.build_response(
                 series=self.series,
                 end_code=0x0050  # コマンドエラー
@@ -269,6 +311,14 @@ class MockPLCServer:
         # 一括書込み
         elif command == MCCommand.BATCH_WRITE.value:
             return self._cmd_batch_write(sub_command, data)
+        
+        # ランダム読出し
+        elif command == MCCommand.RANDOM_READ.value:
+            return self._cmd_random_read(sub_command, data)
+        
+        # ランダム書込み
+        elif command == MCCommand.RANDOM_WRITE.value:
+            return self._cmd_random_write(sub_command, data)
         
         # CPU型名読出し
         elif command == MCCommand.CPU_MODEL_READ.value:
@@ -298,12 +348,19 @@ class MockPLCServer:
     def _cmd_batch_read(self, sub_command: int, data: bytes) -> tuple:
         """一括読出し"""
         if len(data) < 6:
+            self._log(f"Batch read error: data too short ({len(data)} bytes)")
             return 0xC050, b''
         
         # デバイス解析
         device_addr = struct.unpack('<I', data[0:3] + b'\x00')[0]
         device_code = data[3]
         count = struct.unpack('<H', data[4:6])[0]
+        
+        # 点数0は256点として扱う（1Eフレーム互換）
+        if count == 0:
+            count = 256
+        
+        self._log(f"Batch read: device={device_code:#04x}, addr={device_addr}, count={count}, sub_cmd={sub_command:#06x}")
         
         # デバイスタイプ取得
         device_type = None
@@ -313,12 +370,17 @@ class MockPLCServer:
                 break
         
         if device_type is None:
-            return 0xC050, b''  # デバイス指定エラー
+            self._log(f"Unknown device code: {device_code:#04x}")
+            # 不明なデバイスコードの場合、Dレジスタとして扱う
+            device_type = DeviceType.D
+        
+        self._log(f"Device type: {device_type.code} ({device_type.description})")
         
         # ビット読出し
         if sub_command == MCSubCommand.BIT.value:
             values = self.devices.get_bits(device_type, device_addr, count)
             response_data = bytes([0x01 if v else 0x00 for v in values])
+            self._log(f"Bit read result: {len(values)} bits")
         
         # ワード読出し
         else:
@@ -329,15 +391,18 @@ class MockPLCServer:
                 for i in range(word_count):
                     word_val = self.devices.get_bit_as_word(device_type, device_addr + i * 16)
                     response_data += struct.pack('<H', word_val)
+                self._log(f"Bit-as-word read result: {word_count} words")
             else:
                 values = self.devices.get_words(device_type, device_addr, count)
                 response_data = b''.join(struct.pack('<H', v) for v in values)
+                self._log(f"Word read result: {len(values)} words, values={values[:min(5, len(values))]}")
         
         return 0x0000, response_data
     
     def _cmd_batch_write(self, sub_command: int, data: bytes) -> tuple:
         """一括書込み"""
         if len(data) < 6:
+            self._log(f"Batch write error: data too short ({len(data)} bytes)")
             return 0xC050, b''
         
         # デバイス解析
@@ -345,6 +410,12 @@ class MockPLCServer:
         device_code = data[3]
         count = struct.unpack('<H', data[4:6])[0]
         write_data = data[6:]
+        
+        # 点数0は256点として扱う（1Eフレーム互換）
+        if count == 0:
+            count = 256
+        
+        self._log(f"Batch write: device={device_code:#04x}, addr={device_addr}, count={count}, data_len={len(write_data)}")
         
         # デバイスタイプ取得
         device_type = None
@@ -354,13 +425,19 @@ class MockPLCServer:
                 break
         
         if device_type is None:
-            return 0xC050, b''
+            self._log(f"Unknown device code: {device_code:#04x}")
+            # 不明なデバイスコードの場合、Dレジスタとして扱う
+            device_type = DeviceType.D
+        
+        self._log(f"Device type: {device_type.code} ({device_type.description})")
         
         # ビット書込み
         if sub_command == MCSubCommand.BIT.value:
             values = [bool(b) for b in write_data[:count]]
             if not self.devices.set_bits(device_type, device_addr, values):
+                self._log(f"Bit write failed")
                 return 0xC051, b''
+            self._log(f"Bit write success: {len(values)} bits")
         
         # ワード書込み
         else:
@@ -370,13 +447,151 @@ class MockPLCServer:
                     if len(write_data) >= (i + 1) * 2:
                         word_val = struct.unpack('<H', write_data[i*2:(i+1)*2])[0]
                         self.devices.set_bit_from_word(device_type, device_addr + i * 16, word_val)
+                self._log(f"Bit-from-word write success: {count} words")
             else:
                 values = []
                 for i in range(count):
                     if len(write_data) >= (i + 1) * 2:
                         values.append(struct.unpack('<H', write_data[i*2:(i+1)*2])[0])
                 if not self.devices.set_words(device_type, device_addr, values):
+                    self._log(f"Word write failed")
                     return 0xC051, b''
+                self._log(f"Word write success: {len(values)} words, values={values[:min(5, len(values))]}")
+        
+        return 0x0000, b''
+    
+    def _cmd_random_read(self, sub_command: int, data: bytes) -> tuple:
+        """ランダム読出し（複数デバイスを一度に読出し）"""
+        if len(data) < 2:
+            self._log("Random read error: data too short")
+            return 0xC050, b''
+        
+        # ワード点数（1バイト）+ ダブルワード点数（1バイト）
+        word_count = data[0]
+        dword_count = data[1]
+        
+        self._log(f"Random read: word_count={word_count}, dword_count={dword_count}")
+        
+        response_data = b''
+        offset = 2
+        
+        # ワードデバイス読出し
+        for i in range(word_count):
+            if offset + 4 > len(data):
+                break
+            
+            device_addr = struct.unpack('<I', data[offset:offset+3] + b'\x00')[0]
+            device_code = data[offset + 3]
+            offset += 4
+            
+            # デバイスタイプ取得
+            device_type = None
+            for dt in DeviceType:
+                if dt.device_code == device_code:
+                    device_type = dt
+                    break
+            
+            if device_type is None:
+                device_type = DeviceType.D
+            
+            if device_type.is_bit_device:
+                value = self.devices.get_bit_as_word(device_type, device_addr)
+            else:
+                value = self.devices.get_word(device_type, device_addr)
+            
+            response_data += struct.pack('<H', value)
+            self._log(f"  Word {i}: {device_type.code}{device_addr} = {value}")
+        
+        # ダブルワードデバイス読出し
+        for i in range(dword_count):
+            if offset + 4 > len(data):
+                break
+            
+            device_addr = struct.unpack('<I', data[offset:offset+3] + b'\x00')[0]
+            device_code = data[offset + 3]
+            offset += 4
+            
+            device_type = None
+            for dt in DeviceType:
+                if dt.device_code == device_code:
+                    device_type = dt
+                    break
+            
+            if device_type is None:
+                device_type = DeviceType.D
+            
+            # 2ワード読出し（ダブルワード）
+            low = self.devices.get_word(device_type, device_addr)
+            high = self.devices.get_word(device_type, device_addr + 1)
+            response_data += struct.pack('<HH', low, high)
+            self._log(f"  DWord {i}: {device_type.code}{device_addr} = {low + (high << 16)}")
+        
+        return 0x0000, response_data
+    
+    def _cmd_random_write(self, sub_command: int, data: bytes) -> tuple:
+        """ランダム書込み（複数デバイスに一度に書込み）"""
+        if len(data) < 2:
+            self._log("Random write error: data too short")
+            return 0xC050, b''
+        
+        # ワード点数（1バイト）+ ダブルワード点数（1バイト）
+        word_count = data[0]
+        dword_count = data[1]
+        
+        self._log(f"Random write: word_count={word_count}, dword_count={dword_count}")
+        
+        offset = 2
+        
+        # ワードデバイス書込み
+        for i in range(word_count):
+            if offset + 6 > len(data):
+                break
+            
+            device_addr = struct.unpack('<I', data[offset:offset+3] + b'\x00')[0]
+            device_code = data[offset + 3]
+            value = struct.unpack('<H', data[offset+4:offset+6])[0]
+            offset += 6
+            
+            device_type = None
+            for dt in DeviceType:
+                if dt.device_code == device_code:
+                    device_type = dt
+                    break
+            
+            if device_type is None:
+                device_type = DeviceType.D
+            
+            if device_type.is_bit_device:
+                self.devices.set_bit_from_word(device_type, device_addr, value)
+            else:
+                self.devices.set_word(device_type, device_addr, value)
+            
+            self._log(f"  Word {i}: {device_type.code}{device_addr} = {value}")
+        
+        # ダブルワードデバイス書込み
+        for i in range(dword_count):
+            if offset + 8 > len(data):
+                break
+            
+            device_addr = struct.unpack('<I', data[offset:offset+3] + b'\x00')[0]
+            device_code = data[offset + 3]
+            low = struct.unpack('<H', data[offset+4:offset+6])[0]
+            high = struct.unpack('<H', data[offset+6:offset+8])[0]
+            offset += 8
+            
+            device_type = None
+            for dt in DeviceType:
+                if dt.device_code == device_code:
+                    device_type = dt
+                    break
+            
+            if device_type is None:
+                device_type = DeviceType.D
+            
+            self.devices.set_word(device_type, device_addr, low)
+            self.devices.set_word(device_type, device_addr + 1, high)
+            
+            self._log(f"  DWord {i}: {device_type.code}{device_addr} = {low + (high << 16)}")
         
         return 0x0000, b''
     
